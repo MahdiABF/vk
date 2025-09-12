@@ -31,29 +31,20 @@ jobs:
           python3 --version
           pip3 --version
 
-      - name: Install Buildozer & Cython system-wide (avoid PEP 668 issues)
+      - name: Install Buildozer in isolated venv (recommended)
         run: |
           set -e
-          # upgrade pip system-wide as root so site-packages go to /usr/local
-          sudo -H python3 -m pip install --upgrade pip setuptools wheel
-          # install buildozer + cython system-wide so all users (including 'builder') can run it
-          sudo -H python3 -m pip install --upgrade buildozer cython==0.29.36
-          # locate the console-script (should be in /usr/local/bin/buildozer)
-          BUILDOZER_BIN="$(sudo -H bash -lc 'command -v buildozer' || true)"
-          if [ -n "$BUILDOZER_BIN" ]; then
-            echo "Found buildozer at: $BUILDOZER_BIN"
-            sudo chmod a+rx "$BUILDOZER_BIN" || true
-            # export path for later steps
-            echo "BUILDOZER_PATH=$BUILDOZER_BIN" >> $GITHUB_ENV
-          else
-            echo "WARNING: buildozer binary not found after sudo install" >&2
-            echo "BUILDOZER_PATH=" >> $GITHUB_ENV
-          fi
-          # also check python module availability (system install should make module available)
-          sudo -H python3 -c "import buildozer; print('buildozer module OK')" || true
-          # print version for logs (helpful debug)
-          sudo -H "$BUILDOZER_BIN" --version || true
-
+          # create a system venv to avoid touching distro-managed pip packages
+          sudo rm -rf /opt/ci_build_venv
+          sudo python3 -m venv /opt/ci_build_venv
+          # upgrade pip inside venv
+          sudo /opt/ci_build_venv/bin/python -m pip install --upgrade pip setuptools wheel
+          # install buildozer + cython inside venv
+          sudo /opt/ci_build_venv/bin/python -m pip install buildozer cython==0.29.36
+          # make a stable global shim so any user can run `buildozer`
+          sudo ln -sf /opt/ci_build_venv/bin/buildozer /usr/local/bin/buildozer
+          sudo chmod a+rx /usr/local/bin/buildozer
+          echo "BUILDOZER_PATH=/usr/local/bin/buildozer" >> $GITHUB_ENV
 
 
       - name: Ensure buildozer.spec has minimal tokens (source.dir, version)
