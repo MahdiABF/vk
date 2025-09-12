@@ -33,8 +33,9 @@ jobs:
       # 4️⃣ نصب Python packages
       - name: Install Python dependencies
         run: |
-          pip install --upgrade pip
-          pip install buildozer kivy kivymd plyer reportlab
+            pip install --upgrade pip
+            pip install buildozer kivy kivymd plyer reportlab cython
+
 
       # 5️⃣ ساخت APK
       - name: Build APK
