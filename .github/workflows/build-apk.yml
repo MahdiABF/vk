@@ -121,22 +121,31 @@ jobs:
             "$ANDROID_HOME/platform-tools/adb" version || true
           fi
 
-      - name: Build debug APK as builder (robust script, fixed perms)
+      - name: Prepare perms and build as builder (fixed)
         run: |
           set -e
+          # اطمینان از مالکیت و مجوزهای workspace و SDK برای کاربر builder
+          sudo useradd -m -s /bin/bash builder || true
+          sudo chown -R builder:builder "${GITHUB_WORKSPACE}" || true
+          # به دایرکتوری‌ها اذن اجرا بده، به فایل‌ها اذن خواندن
+          sudo find "${GITHUB_WORKSPACE}" -type d -exec chmod 755 {} \;
+          sudo find "${GITHUB_WORKSPACE}" -type f -exec chmod 644 {} \;
+          sudo chmod -R u+rwX,go+rX "${GITHUB_WORKSPACE}"
+          sudo mkdir -p "${ANDROID_HOME}"
+          sudo chown -R builder:builder "${ANDROID_HOME}" || true
+          sudo chmod -R u+rwX,go+rX "${ANDROID_HOME}" || true
+
+          # ساخت اسکریپت در /tmp (با expansion متغیرها)
           CI_SCRIPT_TMP="/tmp/ci_build.sh"
-          # 1) بنویس اسکریپت در /tmp با مقدارهای فعلی متغیرها (expansion انجام می‌شود)
-          cat > "$CI_SCRIPT_TMP" <<BASH
+          cat > "$CI_SCRIPT_TMP" <<'BASH'
           #!/bin/bash
           set -e
           export ANDROID_HOME="${ANDROID_HOME}"
           export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-          export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/usr/local/bin:/usr/bin:\$PATH"
-
+          export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/usr/local/bin:/usr/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
-          echo "Running build as: \$(whoami)"
-          echo "Working dir: \$(pwd)"
-          echo "ANDROID_HOME = \$ANDROID_HOME"
+          echo "Running build as: $(whoami)"
+          echo "Workdir: $(pwd)"
           if ! command -v buildozer >/dev/null 2>&1; then
             echo "Error: buildozer not found in PATH" >&2
           exit 2
@@ -144,7 +153,7 @@ jobs:
           yes | buildozer --verbose android debug
           BASH
 
-          # 2) تنظیم مجوز و مالکیت (با sudo) و اجرا به عنوان builder
+            # تنظیم مجوز و مالکیت و اجرای اسکریپت به عنوان builder
           sudo chmod 755 "$CI_SCRIPT_TMP"
           sudo chown builder:builder "$CI_SCRIPT_TMP"
           sudo -H -u builder bash "$CI_SCRIPT_TMP"
