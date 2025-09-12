@@ -1,69 +1,100 @@
-name: Build APK (Debug + Release)
+name: Build APK (Debug, robust)
 
 on:
   push:
     branches: [ main ]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    # run steps inside an ubuntu container (no sudo required inside container)
+    container:
+      image: ubuntu:24.04
 
     env:
+      # SDK will be installed inside the repo workspace
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      PATH: ${{ github.workspace }}/android-sdk/cmdline-tools/latest/bin:${{ github.workspace }}/android-sdk/platform-tools:${{ github.workspace }}/android-sdk/emulator:${{ github.workspace }}/android-sdk/build-tools/33.0.2:$PATH
+      # keep PATH minimal here; we'll also append PATH via GITHUB_ENV in a step
+      # (don't rely on runner.* variables to avoid earlier errors)
 
     steps:
-    - name: Install basic tools
-      run: |
-        sudo apt update
-        sudo apt install -y tar unzip curl git zip
-
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
-
-    - name: Install system dependencies
+    - name: Install base system packages (no sudo inside container)
       run: |
-        sudo apt install -y \
-          python3-pip python3-setuptools python3-wheel \
-          openjdk-17-jdk \
+        apt-get update -y
+        apt-get install -y --no-install-recommends \
+          curl wget unzip zip tar git python3-pip python3-setuptools python3-wheel \
+          openjdk-17-jdk build-essential ca-certificates \
           libstdc++6 libz-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-          libncurses6 build-essential
+          libncurses6
+        # make sure python3 and pip are callable
+        python3 --version
+        pip3 --version
+        # use pip3 as pip
+        ln -sf $(which pip3) /usr/local/bin/pip || true
 
-    - name: Install Buildozer & Cython
+    - name: Install Buildozer & Cython (pip)
       run: |
-        pip install --upgrade pip
+        pip install --upgrade pip setuptools wheel
         pip install cython==0.29.36 buildozer
 
-    - name: Download Android SDK Command-line Tools
+    - name: Download Android cmdline-tools (robust extract)
       run: |
-        mkdir -p $ANDROID_HOME/cmdline-tools
-        curl -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
-        unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
-        mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-        rm cmdline-tools.zip
+        mkdir -p "$ANDROID_HOME"
+        cd "$ANDROID_HOME"
+        CMDLINE_ZIP=commandlinetools-linux-9477386_latest.zip
+        curl -L -o "$CMDLINE_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
+        # extract into tmpdir to avoid mv-into-self issues
+        unzip -q "$CMDLINE_ZIP" -d tmpcmd
+        mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+        # tmpcmd usually contains a 'cmdline-tools' directory — move its contents into latest
+        if [ -d tmpcmd/cmdline-tools ]; then
+          mv tmpcmd/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
+        else
+          mv tmpcmd/* "$ANDROID_HOME/cmdline-tools/latest/"
+        fi
+        rm -rf tmpcmd "$CMDLINE_ZIP"
 
-    - name: Install Android SDK packages, build-tools, and NDK
+    - name: Expose Android SDK tools to PATH and verify sdkmanager
       run: |
-        yes | sdkmanager --sdk_root=$ANDROID_HOME --licenses
-        sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" \
-          "platforms;android-33" \
-          "build-tools;33.0.2" \
-          "ndk;25.2.9519653"
+        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+        echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
+        # use the sdkmanager from the just-installed cmdline-tools
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
+      # after this step, PATH and ANDROID_HOME are available to later steps via GITHUB_ENV
 
-    - name: Build Debug APK
-      run: buildozer android debug
+    - name: Accept licenses and install platform-tools, build-tools, NDK
+      run: |
+        # use full path to sdkmanager to be explicit
+        SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+        yes | $SDKMAN --sdk_root="$ANDROID_HOME" --licenses
+        $SDKMAN --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-    - name: Build Release APK
-      run: buildozer android release
+    - name: Verify sdkmanager, adb, aapt
+      run: |
+        echo "ANDROID_HOME = $ANDROID_HOME"
+        ls -la "$ANDROID_HOME"
+        which adb || true
+        "$ANDROID_HOME/platform-tools/adb" version || true
+        # check aapt/aidl in build-tools
+        if [ -d "$ANDROID_HOME/build-tools/33.0.2" ]; then
+          ls -la "$ANDROID_HOME/build-tools/33.0.2" | head -n 40
+        fi
 
-    - name: Upload APK artifacts
+    - name: Build debug APK (Buildozer)
+      run: |
+        # Ensure buildozer.spec has: source.dir = . and version = 0.1 (or appropriate)
+        # Use python3 as Buildozer expects system python; ensure it's in PATH
+        buildozer android debug
+      env:
+        # make sure Buildozer sees ANDROID_HOME (already set in GITHUB_ENV) and JAVA_HOME
+        JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+
+    - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
-        name: APKs
+        name: app-debug-apk
         path: bin/*.apk
