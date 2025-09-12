@@ -33,25 +33,27 @@ jobs:
 
       - name: Install Buildozer & Cython system-wide (avoid PEP 668 issues)
         run: |
-          # upgrade pip system-wide (allow break-system-packages)
-          python3 -m pip install --break-system-packages --upgrade pip setuptools wheel
-          # install buildozer and cython system-wide; use break-system-packages to bypass PEP-668 on hosted runner
-          python3 -m pip install --break-system-packages buildozer cython==0.29.36
-          # confirm and capture path to console script
-          BUILDOZER_BIN="$(command -v buildozer || true)"
+          set -e
+          # upgrade pip system-wide as root so site-packages go to /usr/local
+          sudo -H python3 -m pip install --upgrade pip setuptools wheel
+          # install buildozer + cython system-wide so all users (including 'builder') can run it
+          sudo -H python3 -m pip install --upgrade buildozer cython==0.29.36
+          # locate the console-script (should be in /usr/local/bin/buildozer)
+          BUILDOZER_BIN="$(sudo -H bash -lc 'command -v buildozer' || true)"
           if [ -n "$BUILDOZER_BIN" ]; then
             echo "Found buildozer at: $BUILDOZER_BIN"
-            # make sure it's executable by all users
             sudo chmod a+rx "$BUILDOZER_BIN" || true
+            # export path for later steps
             echo "BUILDOZER_PATH=$BUILDOZER_BIN" >> $GITHUB_ENV
           else
-            echo "WARNING: buildozer not found in PATH after install" >&2
+            echo "WARNING: buildozer binary not found after sudo install" >&2
             echo "BUILDOZER_PATH=" >> $GITHUB_ENV
           fi
-          # show version if available
-          if [ -n "$BUILDOZER_BIN" ]; then
-            "$BUILDOZER_BIN" --version || true
-          fi
+          # also check python module availability (system install should make module available)
+          sudo -H python3 -c "import buildozer; print('buildozer module OK')" || true
+          # print version for logs (helpful debug)
+          sudo -H "$BUILDOZER_BIN" --version || true
+
 
 
       - name: Ensure buildozer.spec has minimal tokens (source.dir, version)
@@ -141,6 +143,17 @@ jobs:
           if [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
             "$ANDROID_HOME/platform-tools/adb" version || true
           fi
+      - name: Verify buildozer available to builder
+        run: |
+          echo "BUILDOZER_PATH='$BUILDOZER_PATH'"
+          # try running the binary as builder if we have it
+          if [ -n "$BUILDOZER_PATH" ]; then
+            sudo -H -u builder "$BUILDOZER_PATH" --version || true
+          else
+            # else try python3 -m buildozer as builder
+            sudo -H -u builder python3 -c "import buildozer; print('module ok')" || true
+          fi
+
 
       - name: Prepare perms and build as builder (fixed — use copy of workspace)
         env:
