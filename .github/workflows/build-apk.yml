@@ -120,23 +120,48 @@ jobs:
           if [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
             "$ANDROID_HOME/platform-tools/adb" version || true
           fi
-
-      - name: Build debug APK as builder (non-root)
+      - name: Build debug APK as builder (non-root) — robust script
         run: |
-          sudo -H -u builder bash -lc '
-            set -e
-            export ANDROID_HOME="$ANDROID_HOME"
-            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-            cd "$GITHUB_WORKSPACE"
-            echo "Running buildozer as $(whoami), python: $(python3 --version)"
-            # ensure buildozer is available in PATH (installed system-wide)
-            command -v buildozer || { echo "buildozer not found in PATH"; exit 2; }
-            # Build (pipe yes to avoid interactive prompts)
-            yes | buildozer --verbose android debug
-          '
+          set -e
+          # مسیر اسکریپت داخل workspace
+          CI_SCRIPT="${GITHUB_WORKSPACE}/ci_build.sh"
+
+          # 1) ایجاد اسکریپت با مقدارهای ثابت (مقادیر ANDROID_HOME و GITHUB_WORKSPACE از قبل در runner تعیین شده‌اند)
+          cat > "$CI_SCRIPT" <<BASH
+          #!/bin/bash
+          set -e
+          # مقادیر درج‌شده در زمان نوشتن فایل توسط outer shell پر می‌شوند:
+          export ANDROID_HOME="${ANDROID_HOME}"
+          export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+          # PATH شامل ابزارهای SDK و مسیرهای معمولی است (داخل اسکریپت \$PATH نگه داشته می‌شود)
+          export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/usr/local/bin:/usr/bin:\$PATH"
+
+          # برو به workspace (مسیر ثابت)
+          cd "${GITHUB_WORKSPACE}"
+
+          echo "Running build as: \$(whoami)"
+          echo "Working dir: \$(pwd)"
+          echo "ANDROID_HOME = \$ANDROID_HOME"
+          echo "Java: \$(java -version 2>&1 | head -n 1)"
+
+          # ensure buildozer exists
+          if ! command -v buildozer >/dev/null 2>&1; then
+            echo "Error: buildozer not found in PATH" >&2
+            exit 2
+          fi
+
+          # run buildozer non-interactively (pipe yes)
+          yes | buildozer --verbose android debug
+          BASH
+
+          # 2) تنظیم مالکیت و اجراپذیری اسکریپت برای builder
+          sudo chown builder:builder "$CI_SCRIPT"
+          sudo chmod +x "$CI_SCRIPT"
+
+          # 3) اجرای اسکریپت تحت کاربر builder (بدون مشکل env/permission)
+          sudo -H -u builder bash "$CI_SCRIPT"
         env:
-          # ensure env var is passed to sudo -H -u builder -E if needed; we explicitly export inside command
+          # تضمین اینکه مقدار ANDROID_HOME به ساب‌شل منتقل شود (مگر اینکه قبلاً با GITHUB_ENV ست شده باشد)
           ANDROID_HOME: ${{ github.workspace }}/android-sdk
 
       - name: Upload APK artifact
