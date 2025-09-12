@@ -4,56 +4,55 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     env:
-      ANDROID_SDK_ROOT: ${{ runner.home }}/Android/Sdk
+      ANDROID_SDK_ROOT: $HOME/Android/Sdk
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Setup Python
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
+        python-version: 3.11
 
-    - name: Install system dependencies
+    - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y zip unzip openjdk-17-jdk python3-pip python3-setuptools git wget
+        sudo apt install -y python3-pip python3-setuptools python3-wheel git zip unzip openjdk-17-jdk \
+        libncurses5 libstdc++6 libz-dev build-essential libgstreamer1.0-dev \
+        libgstreamer-plugins-base1.0-dev
 
-    - name: Install Cython and Buildozer
+    - name: Install Buildozer and Cython
       run: |
         pip install --upgrade pip
-        pip install cython buildozer
+        pip install buildozer cython
 
-    - name: Download Android cmdline-tools
+    - name: Download Android Command-line Tools
       run: |
-        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+        mkdir -p $HOME/Android/cmdline-tools
+        cd $HOME/Android
         wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
-        unzip cmdline-tools.zip -d tmpdir
-        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
-        mv tmpdir/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/
-        rm -rf tmpdir cmdline-tools.zip
+        unzip -q cmdline-tools.zip -d cmdline-tools
+        mv cmdline-tools/cmdline-tools cmdline-tools/latest
+        rm cmdline-tools.zip
 
-    - name: Setup Android SDK environment
+    - name: Set up Android SDK environment variables
       run: |
-        echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-        echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH" >> $GITHUB_ENV
-        sdkmanager --version
+        export PATH=$HOME/Android/cmdline-tools/latest/bin:$HOME/Android/Sdk/platform-tools:$PATH
+        yes | sdkmanager --sdk_root=$HOME/Android/Sdk --licenses
+        sdkmanager --sdk_root=$HOME/Android/Sdk "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
-    - name: Accept licenses
+    - name: Verify SDK setup
       run: |
-        yes | sdkmanager --licenses
-
-    - name: Install Build-tools, Platform-tools, NDK
-      run: |
-        sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+        echo $ANDROID_SDK_ROOT
+        which sdkmanager
+        sdkmanager --list
 
     - name: Build APK
       run: |
