@@ -1,4 +1,4 @@
-name: Build APK (Debug, robust - venv)
+name: Build APK (Debug - run buildozer as non-root)
 
 on:
   push:
@@ -12,89 +12,109 @@ jobs:
       image: ubuntu:24.04
 
     env:
-      # SDK will be installed inside the repo workspace
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Install base system packages (no sudo inside container)
-      run: |
-        apt-get update -y
-        apt-get install -y --no-install-recommends \
-          curl wget unzip zip tar git python3 python3-pip python3-setuptools python3-venv python3-wheel \
-          openjdk-17-jdk build-essential ca-certificates \
-          libstdc++6 libz-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-          libncurses6
-        python3 --version
-        pip3 --version
+      - name: Install base system packages (inside container)
+        run: |
+          apt-get update -y
+          apt-get install -y --no-install-recommends \
+            curl wget unzip zip tar git python3 python3-pip python3-setuptools python3-venv python3-wheel \
+            openjdk-17-jdk build-essential ca-certificates sudo \
+            libstdc++6 libz-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libncurses6
+          # ensure pip3 exists
+          python3 --version
+          pip3 --version
+          # create a safer pip cache dir owned by root for now (will use venv later)
+          mkdir -p /github/home/.cache/pip
+          chown -R root:root /github/home/.cache/pip || true
 
-    - name: Prepare Python virtualenv and pip cache dir
-      run: |
-        python3 -m venv $GITHUB_WORKSPACE/venv
-        # use pip from venv to avoid PEP668 "externally-managed-environment"
-        $GITHUB_WORKSPACE/venv/bin/python -m pip install --upgrade pip setuptools wheel
-        mkdir -p $GITHUB_WORKSPACE/.cache/pip
-        # expose venv bin and cache dir to later steps
-        echo "PATH=$GITHUB_WORKSPACE/venv/bin:$PATH" >> $GITHUB_ENV
-        echo "PIP_CACHE_DIR=$GITHUB_WORKSPACE/.cache/pip" >> $GITHUB_ENV
+      - name: Prepare Python virtualenv and set PATH
+        run: |
+          python3 -m venv $GITHUB_WORKSPACE/venv
+          # upgrade pip inside venv
+          $GITHUB_WORKSPACE/venv/bin/python -m pip install --upgrade pip setuptools wheel
+          # expose venv and pip cache to next steps via GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/venv/bin:$PATH" >> $GITHUB_ENV
+          echo "PIP_CACHE_DIR=$GITHUB_WORKSPACE/.cache/pip" >> $GITHUB_ENV
+          mkdir -p $GITHUB_WORKSPACE/.cache/pip
+          chown -R root:root $GITHUB_WORKSPACE/.cache/pip || true
 
-    - name: Install Buildozer & Cython inside venv
-      run: |
-        # now pip points to venv's pip because PATH set in previous step via GITHUB_ENV
-        pip install cython==0.29.36 buildozer
-        buildozer --version
+      - name: Install Buildozer & Cython (inside venv)
+        run: |
+          pip install cython==0.29.36 buildozer
+          buildozer --version
 
-    - name: Download Android cmdline-tools (robust extract)
-      run: |
-        mkdir -p "$ANDROID_HOME"
-        cd "$ANDROID_HOME"
-        CMDLINE_ZIP=commandlinetools-linux-9477386_latest.zip
-        curl -L -o "$CMDLINE_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
-        unzip -q "$CMDLINE_ZIP" -d tmpcmd
-        mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-        if [ -d tmpcmd/cmdline-tools ]; then
-          mv tmpcmd/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
-        else
-          mv tmpcmd/* "$ANDROID_HOME/cmdline-tools/latest/"
-        fi
-        rm -rf tmpcmd "$CMDLINE_ZIP"
+      - name: Download Android cmdline-tools (robust extract)
+        run: |
+          mkdir -p "$ANDROID_HOME"
+          cd "$ANDROID_HOME"
+          CMDLINE_ZIP=commandlinetools-linux-9477386_latest.zip
+          curl -L -o "$CMDLINE_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
+          unzip -q "$CMDLINE_ZIP" -d tmpcmd
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+          if [ -d tmpcmd/cmdline-tools ]; then
+            mv tmpcmd/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
+          else
+            mv tmpcmd/* "$ANDROID_HOME/cmdline-tools/latest/"
+          fi
+          rm -rf tmpcmd "$CMDLINE_ZIP"
 
-    - name: Expose Android SDK tools to PATH and verify sdkmanager
-      run: |
-        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-        echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
-        # explicit check
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
+      - name: Expose Android SDK tools to PATH and verify sdkmanager
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
+          # verify sdkmanager from freshly installed cmdline-tools
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
 
-    - name: Accept licenses and install platform-tools, build-tools, NDK
-      run: |
-        SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-        yes | $SDKMAN --sdk_root="$ANDROID_HOME" --licenses
-        $SDKMAN --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+      - name: Install Android SDK packages, build-tools, and NDK
+        run: |
+          SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | $SDKMAN --sdk_root="$ANDROID_HOME" --licenses
+          $SDKMAN --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-    - name: Verify sdkmanager, adb, build-tools
-      run: |
-        echo "ANDROID_HOME = $ANDROID_HOME"
-        ls -la "$ANDROID_HOME" | head -n 40
-        which adb || true
-        if [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
-          "$ANDROID_HOME/platform-tools/adb" version || true
-        fi
-        if [ -d "$ANDROID_HOME/build-tools/33.0.2" ]; then
-          ls -la "$ANDROID_HOME/build-tools/33.0.2" | head -n 40
-        fi
+      - name: Create non-root user 'builder' and fix permissions
+        run: |
+          # create a local user to run build steps (avoid buildozer root warning/prompt)
+          useradd -m -s /bin/bash builder || true
+          # ensure workspace and android sdk belong to builder
+          chown -R builder:builder $GITHUB_WORKSPACE || true
+          mkdir -p $ANDROID_HOME
+          chown -R builder:builder $ANDROID_HOME || true
+          # ensure venv is owned by builder so builder can run pip/buildozer
+          if [ -d "$GITHUB_WORKSPACE/venv" ]; then
+            chown -R builder:builder "$GITHUB_WORKSPACE/venv"
+          fi
 
-    - name: Build debug APK (Buildozer)
-      run: |
-        # Make sure buildozer.spec has source.dir = . and version = 0.1 (or appropriate)
-        buildozer android debug
-      env:
-        JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      - name: Verify files & users (debug info)
+        run: |
+          id builder || true
+          echo "Workspace: $GITHUB_WORKSPACE"
+          ls -la $GITHUB_WORKSPACE | head -n 50
+          ls -la $ANDROID_HOME || true
 
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-debug-apk
-        path: bin/*.apk
+      - name: Build debug APK as non-root user (builder)
+        run: |
+          sudo -u builder -E bash -lc '
+            export ANDROID_HOME="$ANDROID_HOME"
+            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$GITHUB_WORKSPACE/venv/bin:$PATH"
+            cd "$GITHUB_WORKSPACE"
+            # sanity checks
+            python --version || true
+            which buildozer || echo "buildozer not found in PATH"
+            buildozer --verbose android debug
+          '
+        env:
+          # ensure builder sees correct vars via sudo -E (preserve)
+          # (these env vars are also set via GITHUB_ENV earlier)
+          ANDROID_HOME: ${{ github.workspace }}/android-sdk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: bin/*.apk
