@@ -14,6 +14,11 @@ jobs:
       PATH: ${{ github.workspace }}/android-sdk/cmdline-tools/latest/bin:${{ github.workspace }}/android-sdk/platform-tools:${{ github.workspace }}/android-sdk/emulator:${{ github.workspace }}/android-sdk/build-tools/33.0.2:$PATH
 
     steps:
+    - name: Install basic tools
+      run: |
+        sudo apt update
+        sudo apt install -y tar unzip curl git zip
+
     - name: Checkout repository
       uses: actions/checkout@v3
 
@@ -24,10 +29,9 @@ jobs:
 
     - name: Install system dependencies
       run: |
-        sudo apt update
         sudo apt install -y \
           python3-pip python3-setuptools python3-wheel \
-          git zip unzip openjdk-17-jdk \
+          openjdk-17-jdk \
           libstdc++6 libz-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
           libncurses6 build-essential
 
@@ -53,12 +57,10 @@ jobs:
           "ndk;25.2.9519653"
 
     - name: Build Debug APK
-      run: |
-        buildozer android debug
+      run: buildozer android debug
 
     - name: Build Release APK
-      run: |
-        buildozer android release
+      run: buildozer android release
 
     - name: Upload APK artifacts
       uses: actions/upload-artifact@v4
