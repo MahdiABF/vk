@@ -143,24 +143,24 @@ jobs:
           # ساخت اسکریپت در /tmp (اینجا متغیرها هنگام ایجاد فایل expand می‌شوند تا خالی نباشند)
           CI_SCRIPT_TMP="/tmp/ci_build.sh"
           cat > "$CI_SCRIPT_TMP" <<BASH
-#!/bin/bash
-set -e
-# صراحتا مسیرها را داخل اسکریپت export می‌کنیم تا با sudo -u builder قابل استفاده باشند
-export ANDROID_HOME="${ANDROID_HOME}"
-export GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"
-export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-# قرار دادن مسیرهای مورد نیاز (حتما /usr/local/bin برای buildozer)
-export PATH="/usr/local/bin:/usr/bin:\$PATH:\${ANDROID_HOME}/cmdline-tools/latest/bin:\${ANDROID_HOME}/platform-tools"
-cd "\${GITHUB_WORKSPACE}"
-echo "Running build as: \$(whoami)"
-echo "Workdir: \$(pwd)"
-if ! command -v buildozer >/dev/null 2>&1; then
-  echo "Error: buildozer not found in PATH" >&2
-  exit 2
-fi
-# use verbose to get full logs
-yes | buildozer --verbose android debug
-BASH
+          #!/bin/bash
+          set -e
+          # صراحتا مسیرها را داخل اسکریپت export می‌کنیم تا با sudo -u builder قابل استفاده باشند
+          export ANDROID_HOME="${ANDROID_HOME}"
+          export GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"
+          export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+          # قرار دادن مسیرهای مورد نیاز (حتما /usr/local/bin برای buildozer)
+          export PATH="/usr/local/bin:/usr/bin:\$PATH:\${ANDROID_HOME}/cmdline-tools/latest/bin:\${ANDROID_HOME}/platform-tools"
+          cd "\${GITHUB_WORKSPACE}"
+          echo "Running build as: \$(whoami)"
+          echo "Workdir: \$(pwd)"
+          if ! command -v buildozer >/dev/null 2>&1; then
+            echo "Error: buildozer not found in PATH" >&2
+          exit 2
+          fi
+          # use verbose to get full logs
+          yes | buildozer --verbose android debug
+          BASH
 
           # تنظیم مجوز و مالکیت و اجرای اسکریپت به عنوان builder
           sudo chmod 755 "$CI_SCRIPT_TMP"
