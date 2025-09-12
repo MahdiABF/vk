@@ -1,4 +1,4 @@
-name: Build APK (Debug, robust)
+name: Build APK (Debug, robust - venv)
 
 on:
   push:
@@ -8,15 +8,12 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    # run steps inside an ubuntu container (no sudo required inside container)
     container:
       image: ubuntu:24.04
 
     env:
       # SDK will be installed inside the repo workspace
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      # keep PATH minimal here; we'll also append PATH via GITHUB_ENV in a step
-      # (don't rely on runner.* variables to avoid earlier errors)
 
     steps:
     - name: Checkout repository
@@ -26,20 +23,28 @@ jobs:
       run: |
         apt-get update -y
         apt-get install -y --no-install-recommends \
-          curl wget unzip zip tar git python3-pip python3-setuptools python3-wheel \
+          curl wget unzip zip tar git python3 python3-pip python3-setuptools python3-venv python3-wheel \
           openjdk-17-jdk build-essential ca-certificates \
           libstdc++6 libz-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
           libncurses6
-        # make sure python3 and pip are callable
         python3 --version
         pip3 --version
-        # use pip3 as pip
-        ln -sf $(which pip3) /usr/local/bin/pip || true
 
-    - name: Install Buildozer & Cython (pip)
+    - name: Prepare Python virtualenv and pip cache dir
       run: |
-        pip install --upgrade pip setuptools wheel
+        python3 -m venv $GITHUB_WORKSPACE/venv
+        # use pip from venv to avoid PEP668 "externally-managed-environment"
+        $GITHUB_WORKSPACE/venv/bin/python -m pip install --upgrade pip setuptools wheel
+        mkdir -p $GITHUB_WORKSPACE/.cache/pip
+        # expose venv bin and cache dir to later steps
+        echo "PATH=$GITHUB_WORKSPACE/venv/bin:$PATH" >> $GITHUB_ENV
+        echo "PIP_CACHE_DIR=$GITHUB_WORKSPACE/.cache/pip" >> $GITHUB_ENV
+
+    - name: Install Buildozer & Cython inside venv
+      run: |
+        # now pip points to venv's pip because PATH set in previous step via GITHUB_ENV
         pip install cython==0.29.36 buildozer
+        buildozer --version
 
     - name: Download Android cmdline-tools (robust extract)
       run: |
@@ -47,10 +52,8 @@ jobs:
         cd "$ANDROID_HOME"
         CMDLINE_ZIP=commandlinetools-linux-9477386_latest.zip
         curl -L -o "$CMDLINE_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
-        # extract into tmpdir to avoid mv-into-self issues
         unzip -q "$CMDLINE_ZIP" -d tmpcmd
         mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-        # tmpcmd usually contains a 'cmdline-tools' directory — move its contents into latest
         if [ -d tmpcmd/cmdline-tools ]; then
           mv tmpcmd/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
         else
@@ -62,35 +65,32 @@ jobs:
       run: |
         echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
         echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
-        # use the sdkmanager from the just-installed cmdline-tools
+        # explicit check
         $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
-      # after this step, PATH and ANDROID_HOME are available to later steps via GITHUB_ENV
 
     - name: Accept licenses and install platform-tools, build-tools, NDK
       run: |
-        # use full path to sdkmanager to be explicit
         SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
         yes | $SDKMAN --sdk_root="$ANDROID_HOME" --licenses
         $SDKMAN --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-    - name: Verify sdkmanager, adb, aapt
+    - name: Verify sdkmanager, adb, build-tools
       run: |
         echo "ANDROID_HOME = $ANDROID_HOME"
-        ls -la "$ANDROID_HOME"
+        ls -la "$ANDROID_HOME" | head -n 40
         which adb || true
-        "$ANDROID_HOME/platform-tools/adb" version || true
-        # check aapt/aidl in build-tools
+        if [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
+          "$ANDROID_HOME/platform-tools/adb" version || true
+        fi
         if [ -d "$ANDROID_HOME/build-tools/33.0.2" ]; then
           ls -la "$ANDROID_HOME/build-tools/33.0.2" | head -n 40
         fi
 
     - name: Build debug APK (Buildozer)
       run: |
-        # Ensure buildozer.spec has: source.dir = . and version = 0.1 (or appropriate)
-        # Use python3 as Buildozer expects system python; ensure it's in PATH
+        # Make sure buildozer.spec has source.dir = . and version = 0.1 (or appropriate)
         buildozer android debug
       env:
-        # make sure Buildozer sees ANDROID_HOME (already set in GITHUB_ENV) and JAVA_HOME
         JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
 
     - name: Upload APK artifact
