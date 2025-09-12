@@ -37,9 +37,22 @@ jobs:
           python3 -m pip install --break-system-packages --upgrade pip setuptools wheel
           # install buildozer and cython system-wide; use break-system-packages to bypass PEP-668 on hosted runner
           python3 -m pip install --break-system-packages buildozer cython==0.29.36
-          # confirm
-          which buildozer || true
-          buildozer --version
+          # confirm and capture path to console script
+          BUILDOZER_BIN="$(command -v buildozer || true)"
+          if [ -n "$BUILDOZER_BIN" ]; then
+            echo "Found buildozer at: $BUILDOZER_BIN"
+            # make sure it's executable by all users
+            sudo chmod a+rx "$BUILDOZER_BIN" || true
+            echo "BUILDOZER_PATH=$BUILDOZER_BIN" >> $GITHUB_ENV
+          else
+            echo "WARNING: buildozer not found in PATH after install" >&2
+            echo "BUILDOZER_PATH=" >> $GITHUB_ENV
+          fi
+          # show version if available
+          if [ -n "$BUILDOZER_BIN" ]; then
+            "$BUILDOZER_BIN" --version || true
+          fi
+
 
       - name: Ensure buildozer.spec has minimal tokens (source.dir, version)
         run: |
@@ -134,60 +147,73 @@ jobs:
           ANDROID_HOME: ${{ github.workspace }}/android-sdk
         run: |
           set -e
-          # original runner user (so we can restore ownership later)
           RUNNER_USER="$(id -un)"
           echo "Runner user is: $RUNNER_USER"
 
-          # prepare a private build copy (exclude .git to avoid messing with git internals)
           BUILD_WORKDIR="/tmp/ci_build_workspace"
           sudo rm -rf "$BUILD_WORKDIR"
           sudo mkdir -p "$BUILD_WORKDIR"
-
-          # make sure runner (the process owner) can write into the build workdir
           sudo chown "${RUNNER_USER}:${RUNNER_USER}" "$BUILD_WORKDIR"
           sudo chmod 755 "$BUILD_WORKDIR"
 
-          # copy repository contents except .git into build workdir
-          # use rsync if available (preserves structure) but do NOT preserve owner/group
           if command -v rsync >/dev/null 2>&1; then
             rsync -a --delete --exclude '.git' --no-owner --no-group "${GITHUB_WORKSPACE}/" "$BUILD_WORKDIR/"
           else
-            # fallback: tar copy without sudo extraction (so runner writes files)
             (cd "${GITHUB_WORKSPACE}" && tar -cf - --exclude=.git .) | (cd "$BUILD_WORKDIR" && tar -xpf -)
           fi
 
-          # give ownership of build workspace to builder (so builder can write during build)
           sudo chown -R builder:builder "$BUILD_WORKDIR"
           sudo chmod -R u+rwX,go+rX "$BUILD_WORKDIR"
 
-          # create the build script (with expanded paths pointing to BUILD_WORKDIR)
           CI_SCRIPT_TMP="/tmp/ci_build.sh"
-          cat > "$CI_SCRIPT_TMP" <<BASH
+          # NOTE: BUILDOZER_PATH comes from earlier step via GITHUB_ENV
+          cat > "$CI_SCRIPT_TMP" <<'BASH'
           #!/bin/bash
           set -e
+          # use BUILDOZER_PATH if set, otherwise fallback
+          BUILDOZER_PATH="${BUILDOZER_PATH:-}"
           export ANDROID_HOME="${ANDROID_HOME}"
           export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-          export PATH="/usr/local/bin:/usr/bin:\$PATH:\${ANDROID_HOME}/cmdline-tools/latest/bin:\${ANDROID_HOME}/platform-tools"
+          # ensure /usr/local/bin is in PATH and sdk tools in PATH
+          export PATH="/usr/local/bin:/usr/bin:$PATH:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools"
+
           cd "${BUILD_WORKDIR}"
-          echo "Running build as: \$(whoami)"
-          echo "Workdir: \$(pwd)"
-          if ! command -v buildozer >/dev/null 2>&1; then
-            echo "Error: buildozer not found in PATH" >&2
-          exit 2
+          echo "Running build as: $(whoami)"
+          echo "Workdir: $(pwd)"
+          # choose buildozer command
+          if [ -n "$BUILDOZER_PATH" ] && [ -x "$BUILDOZER_PATH" ]; then
+            BUILD_CMD="$BUILDOZER_PATH"
+          elif command -v buildozer >/dev/null 2>&1; then
+            BUILD_CMD="$(command -v buildozer)"
+          else
+            BUILD_CMD=""
           fi
-          yes | buildozer --verbose android debug
+
+          if [ -n "$BUILD_CMD" ]; then
+            echo "Using buildozer command: $BUILD_CMD"
+            yes | "$BUILD_CMD" --verbose android debug
+          else
+            echo "buildozer binary not found — trying python3 -m buildozer"
+            # some installs expose buildozer as a module; try this as fallback
+            yes | python3 -m buildozer --verbose android debug
+          fi
           BASH
 
-          # set permissions and run as builder
+          # replace placeholders in the generated script with actual values we need (safe expand)
+          # inject BUILD_WORKDIR and ANDROID_HOME into script
+          sudo sed -i "s|\${BUILD_WORKDIR}|$BUILD_WORKDIR|g" "$CI_SCRIPT_TMP" || true
+          sudo sed -i "s|\${ANDROID_HOME}|$ANDROID_HOME|g" "$CI_SCRIPT_TMP" || true
+
           sudo chmod 755 "$CI_SCRIPT_TMP"
           sudo chown builder:builder "$CI_SCRIPT_TMP"
-          sudo -H -u builder bash "$CI_SCRIPT_TMP" || { echo "Builder run failed"; exit 1; }
 
-          # after build, ensure runner can read artifacts: chown back to runner user
+          # export BUILDOZER_PATH into the builder environment when invoking
+          # read from GITHUB_ENV value; if it was empty, the script will fallback
+          sudo -H -u builder env BUILDOZER_PATH="${BUILDOZER_PATH:-}" bash "$CI_SCRIPT_TMP" || { echo "Builder run failed"; exit 1; }
+
+          # after build, restore runner ownership and copy artifacts
           sudo chown -R "${RUNNER_USER}:${RUNNER_USER}" "$BUILD_WORKDIR" || true
           sudo find "$BUILD_WORKDIR" -type f -exec chmod a+r {} \; || true
-
-          # copy APK(s) back to the original workspace for upload
           mkdir -p "${GITHUB_WORKSPACE}/.ci_artifacts"
           sudo cp -v "$BUILD_WORKDIR"/bin/*.apk "${GITHUB_WORKSPACE}/.ci_artifacts/" || true
 
