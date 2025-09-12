@@ -1,4 +1,4 @@
-name: Build APK (Debug - run buildozer as non-root)
+name: Build APK (kivy/buildozer - robust)
 
 on:
   push:
@@ -6,115 +6,70 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:24.04
 
-    env:
-      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+    # Use the prebuilt image that includes buildozer, p4a, SDK tools etc.
+    container:
+      image: kivy/buildozer:latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install base system packages (inside container)
+      - name: Show environment info (debug)
         run: |
-          apt-get update -y
-          apt-get install -y --no-install-recommends \
-            curl wget unzip zip tar git python3 python3-pip python3-setuptools python3-venv python3-wheel \
-            openjdk-17-jdk build-essential ca-certificates sudo \
-            libstdc++6 libz-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libncurses6
-          # ensure pip3 exists
-          python3 --version
-          pip3 --version
-          # create a safer pip cache dir owned by root for now (will use venv later)
-          mkdir -p /github/home/.cache/pip
-          chown -R root:root /github/home/.cache/pip || true
+          echo "User: $(id -u -n)"
+          python --version || true
+          pip --version || true
+          buildozer --version || true
+          ls -la
 
-      - name: Prepare Python virtualenv and set PATH
+      - name: Ensure buildozer.spec has required minimal tokens
         run: |
-          python3 -m venv $GITHUB_WORKSPACE/venv
-          # upgrade pip inside venv
-          $GITHUB_WORKSPACE/venv/bin/python -m pip install --upgrade pip setuptools wheel
-          # expose venv and pip cache to next steps via GITHUB_ENV
-          echo "PATH=$GITHUB_WORKSPACE/venv/bin:$PATH" >> $GITHUB_ENV
-          echo "PIP_CACHE_DIR=$GITHUB_WORKSPACE/.cache/pip" >> $GITHUB_ENV
-          mkdir -p $GITHUB_WORKSPACE/.cache/pip
-          chown -R root:root $GITHUB_WORKSPACE/.cache/pip || true
-
-      - name: Install Buildozer & Cython (inside venv)
-        run: |
-          pip install cython==0.29.36 buildozer
-          buildozer --version
-
-      - name: Download Android cmdline-tools (robust extract)
-        run: |
-          mkdir -p "$ANDROID_HOME"
-          cd "$ANDROID_HOME"
-          CMDLINE_ZIP=commandlinetools-linux-9477386_latest.zip
-          curl -L -o "$CMDLINE_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
-          unzip -q "$CMDLINE_ZIP" -d tmpcmd
-          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-          if [ -d tmpcmd/cmdline-tools ]; then
-            mv tmpcmd/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
-          else
-            mv tmpcmd/* "$ANDROID_HOME/cmdline-tools/latest/"
+          # If buildozer.spec missing, fail fast
+          if [ ! -f buildozer.spec ]; then
+            echo "Error: buildozer.spec not found in repo root" >&2
+            exit 1
           fi
-          rm -rf tmpcmd "$CMDLINE_ZIP"
+          # Ensure source.dir = . exists
+          if ! grep -qE '^source\.dir\s*=' buildozer.spec; then
+            echo "" >> buildozer.spec
+            echo "# auto-added by CI: ensure project root is used" >> buildozer.spec
+            echo "source.dir = ." >> buildozer.spec
+            echo "Added source.dir = . to buildozer.spec"
+          fi
+          # Ensure version exists
+          if ! grep -qE '^version\s*=' buildozer.spec; then
+            echo "" >> buildozer.spec
+            echo "# auto-added by CI: default version" >> buildozer.spec
+            echo "version = 0.1" >> buildozer.spec
+            echo "Added version = 0.1 to buildozer.spec"
+          fi
+          echo "----- buildozer.spec (tail) -----"
+          tail -n 40 buildozer.spec || true
 
-      - name: Expose Android SDK tools to PATH and verify sdkmanager
+      - name: (Optional) show android sdk state in container
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
-          # verify sdkmanager from freshly installed cmdline-tools
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
-
-      - name: Install Android SDK packages, build-tools, and NDK
-        run: |
-          SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | $SDKMAN --sdk_root="$ANDROID_HOME" --licenses
-          $SDKMAN --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
-
-      - name: Create non-root user 'builder' and fix permissions
-        run: |
-          # create a local user to run build steps (avoid buildozer root warning/prompt)
-          useradd -m -s /bin/bash builder || true
-          # ensure workspace and android sdk belong to builder
-          chown -R builder:builder $GITHUB_WORKSPACE || true
-          mkdir -p $ANDROID_HOME
-          chown -R builder:builder $ANDROID_HOME || true
-          # ensure venv is owned by builder so builder can run pip/buildozer
-          if [ -d "$GITHUB_WORKSPACE/venv" ]; then
-            chown -R builder:builder "$GITHUB_WORKSPACE/venv"
+          # Many buildozer images include sdk; show what's present
+          if [ -d /opt/android-sdk ]; then
+            echo "/opt/android-sdk exists"
+            ls -la /opt/android-sdk | head -n 40
+          fi
+          if command -v sdkmanager >/dev/null 2>&1; then
+            sdkmanager --version || true
           fi
 
-      - name: Verify files & users (debug info)
+      - name: Build debug APK (non-interactive)
         run: |
-          id builder || true
-          echo "Workspace: $GITHUB_WORKSPACE"
-          ls -la $GITHUB_WORKSPACE | head -n 50
-          ls -la $ANDROID_HOME || true
-
-      - name: Build debug APK as non-root user (builder)
-        run: |
-          sudo -u builder -E bash -lc '
-            export ANDROID_HOME="$ANDROID_HOME"
-            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$GITHUB_WORKSPACE/venv/bin:$PATH"
-            cd "$GITHUB_WORKSPACE"
-            # sanity checks
-            python --version || true
-            which buildozer || echo "buildozer not found in PATH"
-            buildozer --verbose android debug
-          '
-        env:
-          # ensure builder sees correct vars via sudo -E (preserve)
-          # (these env vars are also set via GITHUB_ENV earlier)
-          ANDROID_HOME: ${{ github.workspace }}/android-sdk
+          # Pipe 'yes' to answer any buildozer prompts (safe for CI)
+          # Use verbose so logs are informative if something fails
+          yes | buildozer --verbose android debug
+        # If you want a release build too, uncomment the next line or add separate step:
+        # run: yes | buildozer --verbose android release
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: visitorapp-apk
           path: bin/*.apk
