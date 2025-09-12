@@ -16,12 +16,25 @@ jobs:
             python3-venv \
             python3-pip \
             build-essential \
-            libtinfo5 \
-            libncurses5 \
+            libtinfo6 \
+            libncurses6 \
             openjdk-11-jdk \
             wget unzip git zlib1g-dev \
             libffi-dev libssl-dev libjpeg-dev
 
+      # نصب Android SDK و پذیرش لایسنس‌ها
+      - name: Install Android SDK
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          cd $ANDROID_SDK_ROOT/cmdline-tools
+          wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
+          unzip cmdline-tools.zip
+          mv cmdline-tools latest
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+
+      # Build APK با Buildozer
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
         with:
