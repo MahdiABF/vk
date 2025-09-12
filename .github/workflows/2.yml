@@ -7,6 +7,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # نصب پیش‌نیازها
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            python3-venv \
+            python3-pip \
+            build-essential \
+            libtinfo5 \
+            libncurses5 \
+            openjdk-11-jdk \
+            wget unzip git zlib1g-dev \
+            libffi-dev libssl-dev libjpeg-dev
+
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
         with:
