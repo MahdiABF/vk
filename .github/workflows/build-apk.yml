@@ -68,10 +68,15 @@ jobs:
           if ! id builder >/dev/null 2>&1; then
             sudo useradd -m -s /bin/bash builder
           fi
+
+          # create ANDROID_HOME and ensure builder owns the SDK path only
           sudo mkdir -p "$ANDROID_HOME"
-          # ensure workspace and android sdk owned by builder
-          sudo chown -R builder:builder "${GITHUB_WORKSPACE}"
           sudo chown -R builder:builder "$ANDROID_HOME"
+          sudo chmod -R u+rwX,go+rX "$ANDROID_HOME" || true
+
+          # do NOT chown the whole GITHUB_WORKSPACE — leave repo owned by runner
+          echo "Note: leaving ${GITHUB_WORKSPACE} ownership unchanged to avoid git permission issues."
+
 
       - name: Download and install Android cmdline-tools (robust)
         run: |
@@ -124,53 +129,68 @@ jobs:
             "$ANDROID_HOME/platform-tools/adb" version || true
           fi
 
-      - name: Prepare perms and build as builder (fixed)
+      - name: Prepare perms and build as builder (fixed — use copy of workspace)
+        env:
+          ANDROID_HOME: ${{ github.workspace }}/android-sdk
         run: |
           set -e
-          # اطمینان از مالکیت و مجوزهای workspace و SDK برای کاربر builder
-          if ! id builder >/dev/null 2>&1; then
-            sudo useradd -m -s /bin/bash builder
-          fi
-          sudo chown -R builder:builder "${GITHUB_WORKSPACE}" || true
-          # به دایرکتوری‌ها اذن اجرا بده، به فایل‌ها اذن خواندن
-          sudo find "${GITHUB_WORKSPACE}" -type d -exec chmod 755 {} \;
-          sudo find "${GITHUB_WORKSPACE}" -type f -exec chmod 644 {} \;
-          sudo chmod -R u+rwX,go+rX "${GITHUB_WORKSPACE}"
-          sudo mkdir -p "${ANDROID_HOME}"
-          sudo chown -R builder:builder "${ANDROID_HOME}" || true
-          sudo chmod -R u+rwX,go+rX "${ANDROID_HOME}" || true
+          # original runner user (so we can restore ownership later)
+          RUNNER_USER="$(id -un)"
+          echo "Runner user is: $RUNNER_USER"
 
-          # ساخت اسکریپت در /tmp (اینجا متغیرها هنگام ایجاد فایل expand می‌شوند تا خالی نباشند)
+          # prepare a private build copy (exclude .git to avoid messing with git internals)
+          BUILD_WORKDIR="/tmp/ci_build_workspace"
+          sudo rm -rf "$BUILD_WORKDIR"
+          sudo mkdir -p "$BUILD_WORKDIR"
+
+          # copy repository contents except .git into build workdir
+          # use rsync if available (preserves permissions nicely), fall back to tar if not
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -a --delete --exclude '.git' "${GITHUB_WORKSPACE}/" "$BUILD_WORKDIR/"
+          else
+            (cd "${GITHUB_WORKSPACE}" && tar -cf - --exclude=.git .) | (cd "$BUILD_WORKDIR" && sudo tar -xpf -)
+          fi
+
+          # give ownership of build workspace to builder
+          sudo chown -R builder:builder "$BUILD_WORKDIR"
+          sudo chmod -R u+rwX,go+rX "$BUILD_WORKDIR"
+
+          # create the build script (with expanded paths pointing to BUILD_WORKDIR)
           CI_SCRIPT_TMP="/tmp/ci_build.sh"
           cat > "$CI_SCRIPT_TMP" <<BASH
-          #!/bin/bash
+          ‍#‍‍!/bin/bash
           set -e
-          # صراحتا مسیرها را داخل اسکریپت export می‌کنیم تا با sudo -u builder قابل استفاده باشند
           export ANDROID_HOME="${ANDROID_HOME}"
-          export GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"
           export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-          # قرار دادن مسیرهای مورد نیاز (حتما /usr/local/bin برای buildozer)
           export PATH="/usr/local/bin:/usr/bin:\$PATH:\${ANDROID_HOME}/cmdline-tools/latest/bin:\${ANDROID_HOME}/platform-tools"
-          cd "\${GITHUB_WORKSPACE}"
+          cd "${BUILD_WORKDIR}"
           echo "Running build as: \$(whoami)"
           echo "Workdir: \$(pwd)"
           if ! command -v buildozer >/dev/null 2>&1; then
             echo "Error: buildozer not found in PATH" >&2
           exit 2
           fi
-          # use verbose to get full logs
+          # build (verbose for good logs)
           yes | buildozer --verbose android debug
           BASH
 
-          # تنظیم مجوز و مالکیت و اجرای اسکریپت به عنوان builder
+          # set permissions and run as builder
           sudo chmod 755 "$CI_SCRIPT_TMP"
           sudo chown builder:builder "$CI_SCRIPT_TMP"
-          sudo -H -u builder bash "$CI_SCRIPT_TMP"
-        env:
-          ANDROID_HOME: ${{ github.workspace }}/android-sdk
+          sudo -H -u builder bash "$CI_SCRIPT_TMP" || { echo "Builder run failed"; exit 1; }
+
+          # after build, ensure runner can read artifacts: chown back to runner user
+          sudo chown -R "${RUNNER_USER}:${RUNNER_USER}" "$BUILD_WORKDIR" || true
+          # make sure artifact files are world-readable if chown fails for any reason
+          sudo find "$BUILD_WORKDIR" -type f -exec chmod a+r {} \; || true
+
+          # copy APK(s) back to the original workspace for upload (optional)
+          mkdir -p "${GITHUB_WORKSPACE}/.ci_artifacts"
+          sudo cp -v "$BUILD_WORKDIR"/bin/*.apk "${GITHUB_WORKSPACE}/.ci_artifacts/" || true
+
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: bin/*.apk
+          path: .ci_artifacts/*.apk
