@@ -31,22 +31,44 @@ jobs:
           python3 --version
           pip3 --version
 
-      - name: Install Buildozer in isolated venv (recommended)
+      - name: Install Buildozer in isolated venv (venv + system-wrapper)
         run: |
           set -e
-          # remove any previous venv, create fresh one
-          sudo rm -rf /opt/ci_build_venv
-          sudo python3 -m venv /opt/ci_build_venv
+          VENV_DIR="/opt/ci_build_venv"
+          sudo rm -rf "$VENV_DIR"
+          sudo python3 -m venv "$VENV_DIR"
+
           # upgrade pip inside venv and install buildozer + cython
-          sudo /opt/ci_build_venv/bin/python -m pip install --upgrade pip setuptools wheel
-          sudo /opt/ci_build_venv/bin/python -m pip install buildozer cython==0.29.36
-          # create global shims so any user (including builder) can run them
-          sudo ln -sf /opt/ci_build_venv/bin/buildozer /usr/local/bin/buildozer
-          sudo ln -sf /opt/ci_build_venv/bin/cython /usr/local/bin/cython
-          sudo chmod a+rx /usr/local/bin/buildozer /usr/local/bin/cython
-          # export paths for later steps
+          sudo "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
+          sudo "$VENV_DIR/bin/python" -m pip install buildozer cython==0.29.36
+
+          # find the venv's site-packages dir (for system python to import buildozer)
+          VENV_SITEPACKAGES="$($VENV_DIR/bin/python -c 'import site,sys; sp = site.getsitepackages(); print(sp[0] if sp else sys.path[-1])')"
+          echo "VENV site-packages: $VENV_SITEPACKAGES"
+
+          # create global shims for cython and a wrapper for buildozer:
+          # - cython: symlink to venv binary (executable)
+          sudo ln -sf "$VENV_DIR/bin/cython" /usr/local/bin/cython
+          sudo chmod a+rx /usr/local/bin/cython
+
+          # - buildozer: wrapper that runs the buildozer module using system python
+          #             but adds the venv site-packages to PYTHONPATH so the module is importable.
+          sudo tee /usr/local/bin/buildozer > /dev/null <<EOF
+          #!/bin/bash
+          # wrapper to run buildozer module with system python while using venv-installed packages
+          export VENV_SITEPACKAGES="$VENV_SITEPACKAGES"
+          export PYTHONPATH="\$VENV_SITEPACKAGES:\${PYTHONPATH:-}"
+          exec /usr/bin/python3 -m buildozer "\$@"
+          EOF
+          sudo chmod a+rx /usr/local/bin/buildozer
+
+          # expose path variables for later steps
           echo "BUILDOZER_PATH=/usr/local/bin/buildozer" >> $GITHUB_ENV
           echo "CYTHON_PATH=/usr/local/bin/cython" >> $GITHUB_ENV
+
+          # quick sanity checks (print versions)
+          /usr/local/bin/buildozer --version || true
+          /usr/local/bin/cython --version || true
 
 
       - name: Ensure buildozer.spec has minimal tokens (source.dir, version)
@@ -230,6 +252,13 @@ jobs:
           sudo find "$BUILD_WORKDIR" -type f -exec chmod a+r {} \; || true
           mkdir -p "${GITHUB_WORKSPACE}/.ci_artifacts"
           sudo cp -v "$BUILD_WORKDIR"/bin/*.apk "${GITHUB_WORKSPACE}/.ci_artifacts/" || true
+
+      - name: Verify buildozer & cython available to builder
+        run: |
+          echo "BUILDOZER_PATH='$BUILDOZER_PATH'"
+          echo "CYTHON_PATH='$CYTHON_PATH'"
+          sudo -H -u builder $BUILDOZER_PATH --version || true
+          sudo -H -u builder $CYTHON_PATH --version || sudo -H -u builder python3 -c "import Cython; print('Cython module OK')" || true
 
 
       - name: Upload APK artifact
