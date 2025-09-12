@@ -64,7 +64,7 @@ jobs:
 
       - name: Create non-root builder user and prepare folders
         run: |
-          # create 'builder' user if not exists
+          # create 'builder' user if not exists (safer check)
           if ! id builder >/dev/null 2>&1; then
             sudo useradd -m -s /bin/bash builder
           fi
@@ -72,6 +72,7 @@ jobs:
           # ensure workspace and android sdk owned by builder
           sudo chown -R builder:builder "${GITHUB_WORKSPACE}"
           sudo chown -R builder:builder "$ANDROID_HOME"
+
       - name: Download and install Android cmdline-tools (robust)
         run: |
           set -e
@@ -96,9 +97,11 @@ jobs:
           if id builder >/dev/null 2>&1; then
             sudo chown -R builder:builder "$ANDROID_HOME"
           else
-            # if builder doesn't exist, fallback to workspace owner
-            sudo chown -R "$(id -u -n)" "$(id -u -n)" "$ANDROID_HOME" || true
+            # fallback: chown to current runner user
+            CURRENT_USER="$(id -un)"
+            sudo chown -R "${CURRENT_USER}:${CURRENT_USER}" "$ANDROID_HOME" || true
           fi
+
       - name: Install Android SDK packages (platform-tools, build-tools, ndk)
         run: |
           SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -125,7 +128,9 @@ jobs:
         run: |
           set -e
           # اطمینان از مالکیت و مجوزهای workspace و SDK برای کاربر builder
-          sudo useradd -m -s /bin/bash builder || true
+          if ! id builder >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash builder
+          fi
           sudo chown -R builder:builder "${GITHUB_WORKSPACE}" || true
           # به دایرکتوری‌ها اذن اجرا بده، به فایل‌ها اذن خواندن
           sudo find "${GITHUB_WORKSPACE}" -type d -exec chmod 755 {} \;
@@ -135,25 +140,29 @@ jobs:
           sudo chown -R builder:builder "${ANDROID_HOME}" || true
           sudo chmod -R u+rwX,go+rX "${ANDROID_HOME}" || true
 
-          # ساخت اسکریپت در /tmp (با expansion متغیرها)
+          # ساخت اسکریپت در /tmp (اینجا متغیرها هنگام ایجاد فایل expand می‌شوند تا خالی نباشند)
           CI_SCRIPT_TMP="/tmp/ci_build.sh"
-          cat > "$CI_SCRIPT_TMP" <<'BASH'
-          #!/bin/bash
-          set -e
-          export ANDROID_HOME="${ANDROID_HOME}"
-          export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-          export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/usr/local/bin:/usr/bin:$PATH"
-          cd "${GITHUB_WORKSPACE}"
-          echo "Running build as: $(whoami)"
-          echo "Workdir: $(pwd)"
-          if ! command -v buildozer >/dev/null 2>&1; then
-            echo "Error: buildozer not found in PATH" >&2
-          exit 2
-          fi
-          yes | buildozer --verbose android debug
-          BASH
+          cat > "$CI_SCRIPT_TMP" <<BASH
+#!/bin/bash
+set -e
+# صراحتا مسیرها را داخل اسکریپت export می‌کنیم تا با sudo -u builder قابل استفاده باشند
+export ANDROID_HOME="${ANDROID_HOME}"
+export GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"
+export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+# قرار دادن مسیرهای مورد نیاز (حتما /usr/local/bin برای buildozer)
+export PATH="/usr/local/bin:/usr/bin:\$PATH:\${ANDROID_HOME}/cmdline-tools/latest/bin:\${ANDROID_HOME}/platform-tools"
+cd "\${GITHUB_WORKSPACE}"
+echo "Running build as: \$(whoami)"
+echo "Workdir: \$(pwd)"
+if ! command -v buildozer >/dev/null 2>&1; then
+  echo "Error: buildozer not found in PATH" >&2
+  exit 2
+fi
+# use verbose to get full logs
+yes | buildozer --verbose android debug
+BASH
 
-            # تنظیم مجوز و مالکیت و اجرای اسکریپت به عنوان builder
+          # تنظیم مجوز و مالکیت و اجرای اسکریپت به عنوان builder
           sudo chmod 755 "$CI_SCRIPT_TMP"
           sudo chown builder:builder "$CI_SCRIPT_TMP"
           sudo -H -u builder bash "$CI_SCRIPT_TMP"
