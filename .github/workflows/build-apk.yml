@@ -72,26 +72,33 @@ jobs:
           # ensure workspace and android sdk owned by builder
           sudo chown -R builder:builder "${GITHUB_WORKSPACE}"
           sudo chown -R builder:builder "$ANDROID_HOME"
-
-      - name: Download and install Android cmdline-tools
+      - name: Download and install Android cmdline-tools (robust)
         run: |
+          set -e
           CMDLINE_ZIP="commandlinetools-linux-9477386_latest.zip"
-          cd "${GITHUB_WORKSPACE}"
-          # download into workspace to avoid permission issues
-          curl -L -o "$CMDLINE_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          unzip -q "$CMDLINE_ZIP" -d tmpcmd
-          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-          if [ -d tmpcmd/cmdline-tools ]; then
-            sudo mv tmpcmd/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
+          # 1) download into /tmp (safe writeable location)
+          TMP_ZIP="/tmp/${CMDLINE_ZIP}"
+          curl -L -o "$TMP_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
+          # 2) extract into a tmpdir to avoid mv-into-self problems
+          TMPDIR="$(mktemp -d)"
+          unzip -q "$TMP_ZIP" -d "$TMPDIR"
+          # 3) ensure target exists
+          sudo mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+          # 4) move extracted content into latest (handle different archive structures)
+          if [ -d "$TMPDIR/cmdline-tools" ]; then
+            sudo mv "$TMPDIR/cmdline-tools/"* "$ANDROID_HOME/cmdline-tools/latest/"
           else
-            sudo mv tmpcmd/* "$ANDROID_HOME/cmdline-tools/latest/"
+            sudo mv "$TMPDIR"/* "$ANDROID_HOME/cmdline-tools/latest/"
           fi
-          rm -rf tmpcmd "$CMDLINE_ZIP"
-          # set ownership so builder can write to SDK (pip --user will write into builder's home)
-          sudo chown -R builder:builder "$ANDROID_HOME"
-          ls -la "$ANDROID_HOME" | head -n 40
-
+          # 5) cleanup
+          rm -rf "$TMPDIR" "$TMP_ZIP"
+          # 6) set ownership so non-root builder can use SDK
+          if id builder >/dev/null 2>&1; then
+            sudo chown -R builder:builder "$ANDROID_HOME"
+          else
+            # if builder doesn't exist, fallback to workspace owner
+            sudo chown -R "$(id -u -n)" "$(id -u -n)" "$ANDROID_HOME" || true
+          fi
       - name: Install Android SDK packages (platform-tools, build-tools, ndk)
         run: |
           SDKMAN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
