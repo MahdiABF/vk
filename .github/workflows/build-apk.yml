@@ -143,22 +143,27 @@ jobs:
           sudo rm -rf "$BUILD_WORKDIR"
           sudo mkdir -p "$BUILD_WORKDIR"
 
+          # make sure runner (the process owner) can write into the build workdir
+          sudo chown "${RUNNER_USER}:${RUNNER_USER}" "$BUILD_WORKDIR"
+          sudo chmod 755 "$BUILD_WORKDIR"
+
           # copy repository contents except .git into build workdir
-          # use rsync if available (preserves permissions nicely), fall back to tar if not
+          # use rsync if available (preserves structure) but do NOT preserve owner/group
           if command -v rsync >/dev/null 2>&1; then
-            rsync -a --delete --exclude '.git' "${GITHUB_WORKSPACE}/" "$BUILD_WORKDIR/"
+            rsync -a --delete --exclude '.git' --no-owner --no-group "${GITHUB_WORKSPACE}/" "$BUILD_WORKDIR/"
           else
-            (cd "${GITHUB_WORKSPACE}" && tar -cf - --exclude=.git .) | (cd "$BUILD_WORKDIR" && sudo tar -xpf -)
+            # fallback: tar copy without sudo extraction (so runner writes files)
+            (cd "${GITHUB_WORKSPACE}" && tar -cf - --exclude=.git .) | (cd "$BUILD_WORKDIR" && tar -xpf -)
           fi
 
-          # give ownership of build workspace to builder
+          # give ownership of build workspace to builder (so builder can write during build)
           sudo chown -R builder:builder "$BUILD_WORKDIR"
           sudo chmod -R u+rwX,go+rX "$BUILD_WORKDIR"
 
           # create the build script (with expanded paths pointing to BUILD_WORKDIR)
           CI_SCRIPT_TMP="/tmp/ci_build.sh"
           cat > "$CI_SCRIPT_TMP" <<BASH
-          ‍#‍‍!/bin/bash
+          #!/bin/bash
           set -e
           export ANDROID_HOME="${ANDROID_HOME}"
           export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
@@ -170,7 +175,6 @@ jobs:
             echo "Error: buildozer not found in PATH" >&2
           exit 2
           fi
-          # build (verbose for good logs)
           yes | buildozer --verbose android debug
           BASH
 
@@ -181,10 +185,9 @@ jobs:
 
           # after build, ensure runner can read artifacts: chown back to runner user
           sudo chown -R "${RUNNER_USER}:${RUNNER_USER}" "$BUILD_WORKDIR" || true
-          # make sure artifact files are world-readable if chown fails for any reason
           sudo find "$BUILD_WORKDIR" -type f -exec chmod a+r {} \; || true
 
-          # copy APK(s) back to the original workspace for upload (optional)
+          # copy APK(s) back to the original workspace for upload
           mkdir -p "${GITHUB_WORKSPACE}/.ci_artifacts"
           sudo cp -v "$BUILD_WORKDIR"/bin/*.apk "${GITHUB_WORKSPACE}/.ci_artifacts/" || true
 
