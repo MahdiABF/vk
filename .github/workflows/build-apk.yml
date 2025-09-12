@@ -34,17 +34,19 @@ jobs:
       - name: Install Buildozer in isolated venv (recommended)
         run: |
           set -e
-          # create a system venv to avoid touching distro-managed pip packages
+          # remove any previous venv, create fresh one
           sudo rm -rf /opt/ci_build_venv
           sudo python3 -m venv /opt/ci_build_venv
-          # upgrade pip inside venv
+          # upgrade pip inside venv and install buildozer + cython
           sudo /opt/ci_build_venv/bin/python -m pip install --upgrade pip setuptools wheel
-          # install buildozer + cython inside venv
           sudo /opt/ci_build_venv/bin/python -m pip install buildozer cython==0.29.36
-          # make a stable global shim so any user can run `buildozer`
+          # create global shims so any user (including builder) can run them
           sudo ln -sf /opt/ci_build_venv/bin/buildozer /usr/local/bin/buildozer
-          sudo chmod a+rx /usr/local/bin/buildozer
+          sudo ln -sf /opt/ci_build_venv/bin/cython /usr/local/bin/cython
+          sudo chmod a+rx /usr/local/bin/buildozer /usr/local/bin/cython
+          # export paths for later steps
           echo "BUILDOZER_PATH=/usr/local/bin/buildozer" >> $GITHUB_ENV
+          echo "CYTHON_PATH=/usr/local/bin/cython" >> $GITHUB_ENV
 
 
       - name: Ensure buildozer.spec has minimal tokens (source.dir, version)
@@ -144,6 +146,14 @@ jobs:
             # else try python3 -m buildozer as builder
             sudo -H -u builder python3 -c "import buildozer; print('module ok')" || true
           fi
+
+      - name: Verify buildozer & cython available to builder
+        run: |
+          echo "BUILDOZER_PATH='$BUILDOZER_PATH'"
+          echo "CYTHON_PATH='$CYTHON_PATH'"
+          # try running as builder
+          sudo -H -u builder $BUILDOZER_PATH --version || true
+          sudo -H -u builder $CYTHON_PATH --version || sudo -H -u builder python3 -c "import Cython; print('Cython module OK')" || true
 
 
       - name: Prepare perms and build as builder (fixed — use copy of workspace)
