@@ -1,6 +1,6 @@
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build:
@@ -8,7 +8,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # نصب پیش‌نیازها
       - name: Install dependencies
         run: |
           sudo apt update
@@ -16,25 +15,25 @@ jobs:
             python3-venv \
             python3-pip \
             build-essential \
-            libtinfo6 \
-            libncurses6 \
+            libtinfo5 \
+            libncurses5 \
             openjdk-11-jdk \
             wget unzip git zlib1g-dev \
             libffi-dev libssl-dev libjpeg-dev
 
-      # نصب Android SDK و پذیرش لایسنس‌ها
-      - name: Install Android SDK
+      - name: Install Android SDK command-line tools
         run: |
-          export ANDROID_SDK_ROOT=$HOME/android-sdk
-          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
-          cd $ANDROID_SDK_ROOT/cmdline-tools
-          wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
-          unzip cmdline-tools.zip
-          mv cmdline-tools latest
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip
+          unzip commandlinetools-linux-8512546_latest.zip -d ~/android-sdk
+          rm commandlinetools-linux-8512546_latest.zip
+          yes | ~/android-sdk/cmdline-tools/bin/sdkmanager --licenses
+          yes | ~/android-sdk/cmdline-tools/bin/sdkmanager "build-tools;30.0.3"
 
-      # Build APK با Buildozer
+      - name: Set environment variables
+        run: |
+          echo "ANDROID_SDK_ROOT=~/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_HOME=~/android-sdk" >> $GITHUB_ENV
+
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
         with:
