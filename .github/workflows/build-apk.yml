@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK (Debug + Release)
 
 on:
   push:
@@ -11,10 +11,10 @@ jobs:
 
     env:
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      PATH: ${{ github.workspace }}/android-sdk/cmdline-tools/latest/bin:${{ github.workspace }}/android-sdk/platform-tools:${{ env.PATH }}
+      PATH: ${{ github.workspace }}/android-sdk/cmdline-tools/latest/bin:${{ github.workspace }}/android-sdk/platform-tools:${{ github.workspace }}/android-sdk/emulator:${{ github.workspace }}/android-sdk/build-tools/33.0.2:$PATH
 
     steps:
-    - name: Checkout repo
+    - name: Checkout repository
       uses: actions/checkout@v3
 
     - name: Set up Python
@@ -36,7 +36,7 @@ jobs:
         pip install --upgrade pip
         pip install cython==0.29.36 buildozer
 
-    - name: Download Android SDK command line tools
+    - name: Download Android SDK Command-line Tools
       run: |
         mkdir -p $ANDROID_HOME/cmdline-tools
         curl -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
@@ -44,17 +44,24 @@ jobs:
         mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
         rm cmdline-tools.zip
 
-    - name: Install Android SDK packages
+    - name: Install Android SDK packages, build-tools, and NDK
       run: |
         yes | sdkmanager --sdk_root=$ANDROID_HOME --licenses
-        sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+        sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" \
+          "platforms;android-33" \
+          "build-tools;33.0.2" \
+          "ndk;25.2.9519653"
 
-    - name: Build APK
+    - name: Build Debug APK
       run: |
         buildozer android debug
 
-    - name: Upload APK artifact
+    - name: Build Release APK
+      run: |
+        buildozer android release
+
+    - name: Upload APK artifacts
       uses: actions/upload-artifact@v3
       with:
-        name: app-debug-apk
+        name: APKs
         path: bin/*.apk
